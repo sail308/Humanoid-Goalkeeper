@@ -124,20 +124,27 @@ class LeggedRobot(BaseTask):
         Args:
             actions (torch.Tensor): Tensor of shape (num_envs, num_actions_per_env)
         """
+        # control_type = 'P', 但是 clip_actions=100,
+        # 本项目包含了rsl_rl的第三方库，里面的ActorCritic类里，有一行代码给actor的输出层配置了Tanh激活，但是这行代码被注释掉了
         clip_actions = self.cfg.normalization.clip_actions
         self.actions = torch.clip(actions, -clip_actions, clip_actions).to(self.device)
     
+        # decimation=4，一次policy执行四步sim
         self.delayed_actions = self.actions.clone().view(1, self.num_envs, self.num_actions).repeat(self.cfg.control.decimation, 1, 1)
-        delay_steps = torch.randint(0, self.cfg.control.decimation, (self.num_envs, 1), device=self.device)
+        delay_steps = torch.randint(0, self.cfg.control.decimation, (self.num_envs, 1), device=self.device)     # 随机延迟执行新的action
+        # Domain Random 1： action执行的随机delay：修改delayed_actions, 前几个是上一次的action，后几个是新的action
         if self.cfg.domain_rand.delay:
             for i in range(self.cfg.control.decimation):
                 self.delayed_actions[i] = self.last_actions + (self.actions - self.last_actions) * (i >= delay_steps)
                 
-        # Randomize Joint Injections
+        # Domain Random 2：Randomize Joint Injections，在position自行转化成 torque 后，随机在 torque 上加入偏置
+        # 随机偏执的范围是 torque_limits 的 (-0.01,0.01) 倍
         if self.cfg.domain_rand.randomize_joint_injection:
             self.joint_injection = torch_rand_float(self.cfg.domain_rand.joint_injection_range[0], self.cfg.domain_rand.joint_injection_range[1], (self.num_envs, self.num_dof), device=self.device) * self.torque_limits.unsqueeze(0)
-            self.joint_injection[:, self.curriculum_dof_indices] = 0.
+            self.joint_injection[:, self.curriculum_dof_indices] = 0.   # curriculum_joints(waist_yaw, shoulder_yaw, shoulder_roll)不加偏执
+
         # step physics and render each frame
+        # 这段就是原始的 legged_gym 的代码，除了用 delayed_actions 替换了 actions 求 torques
         self.render()
         for _ in range(self.cfg.control.decimation):
             self.torques = self._compute_torques(self.delayed_actions[_]).view(self.torques.shape)
@@ -146,14 +153,15 @@ class LeggedRobot(BaseTask):
             if self.device == 'cpu':
                 self.gym.fetch_results(self.sim, True)
             self.gym.refresh_dof_state_tensor(self.sim)
-        termination_ids, termination_priveleged_obs = self.post_physics_step()
+        termination_ids, termination_priveleged_obs = self.post_physics_step()  # legged_gym 没有返回项
 
-        # return clipped obs, clipped states (None), rewards, dones and infos
+        # return clipped obs, clipped states (None), rewards, dones and infos, legged_gym 本来就有的原始代码
         clip_obs = self.cfg.normalization.clip_observations
         self.obs_buf = torch.clip(self.obs_buf, -clip_obs, clip_obs)
         if self.privileged_obs_buf is not None:
             self.privileged_obs_buf = torch.clip(self.privileged_obs_buf, -clip_obs, clip_obs)
 
+        # 比原始代码多返回了后面 termination 两项，这是由上面 post_physics_step 返回的
         return self.obs_buf, self.privileged_obs_buf, self.rew_buf, self.reset_buf, self.extras, termination_ids, termination_priveleged_obs
 
     def get_amp_observations(self):
@@ -171,37 +179,41 @@ class LeggedRobot(BaseTask):
         """
         self.gym.refresh_actor_root_state_tensor(self.sim)
         self.gym.refresh_net_contact_force_tensor(self.sim)
-        self.gym.refresh_rigid_body_state_tensor(self.sim)
+        self.gym.refresh_rigid_body_state_tensor(self.sim)      # legged_gym 没有这一行
 
         self.episode_length_buf += 1
         self.common_step_counter += 1
-        self.catchstep -= 1
+        self.catchstep -= 1     # legged_gym 没有这一行
+
         # prepare quantities
-        self.base_quat[:] = self.root_states[:, 3:7]
+        self.base_quat[:] = self.root_states[:, 3:7]        # 不知道 root_states 是什么时候更新的
         self.roll, self.pitch, self.yaw = euler_from_quaternion(self.base_quat)
         
         # self.base_lin_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
+        # 将 upper_body_index=pelvis 认为是 base，其实G1 urdf里本来的base就是 pelvis
         self.base_lin_vel = quat_rotate_inverse(self.rigid_body_states[:, self.upper_body_index,3:7], self.rigid_body_states[:, self.upper_body_index,7:10])
         self.base_ang_vel = quat_rotate_inverse(self.rigid_body_states[:, self.upper_body_index,3:7], self.rigid_body_states[:, self.upper_body_index,10:13])
 
         self.torso_pos = self.rigid_body_states[:, self.torso_index, 0:3]
 
         # self.projected_gravity[:] = quat_rotate_inverse(self.base_quat, self.gravity_vec)
-        self.projected_gravity[:] = quat_rotate_inverse(self.rigid_body_states[:, self.upper_body_index, 3:7], self.gravity_vec)
+        self.projected_gravity[:] = quat_rotate_inverse(self.rigid_body_states[:, self.upper_body_index, 3:7], self.gravity_vec)    # pelvis的重力投影
+        # base(pelvis) 的线加速度
         self.base_lin_acc = (self.root_states[:, 7:10] - self.last_root_vel[:, :3]) / self.dt
         
         
         # compute contact related quantities
 
         # compute joint powers
+        # 为什么要把功率都 cat 起来
         joint_powers = torch.abs(self.torques * self.dof_vel).unsqueeze(1)
         self.joint_powers = torch.cat((joint_powers, self.joint_powers[:, :-1]), dim=1)
         
         self._post_physics_step_callback()
 
-
-        balllocal =  self.ball_states[:, 0] - self.env_origins[:, 0]
-        approachidx = ((balllocal < 0.5) & (balllocal > 0.1) & (self.ball_states[:,7]  - self.ball_vel < 2.0)).nonzero(as_tuple=False).flatten()
+        # 计算球和接球区域相关的变量, 需要用到的时候细看
+        balllocal =  self.ball_states[:, 0] - self.env_origins[:, 0]    # 球在env中坐标
+        approachidx = ((balllocal < 0.5) & (balllocal > 0.1) & (self.ball_states[:,7]  - self.ball_vel < 2.0)).nonzero(as_tuple=False).flatten() # 找出所有非零元素的env索引
         self.end_target[approachidx, :] = self.ball_states[approachidx, :3].clone()
         self.end_target[:, 0] = torch.clip(self.end_target[:, 0], min = self.env_origins[:, 0] + 0.1, max = self.env_origins[:, 0] + 1.0)
 
@@ -247,7 +259,7 @@ class LeggedRobot(BaseTask):
 
         return env_ids, termination_privileged_obs
 
-    def check_termination(self):
+    def check_termination(self):    # post_physics_step 中调用
         """ Check if environments need to be reset
         """
 
@@ -619,7 +631,8 @@ class LeggedRobot(BaseTask):
     def _post_physics_step_callback(self):
         """ Callback called before computing terminations, rewards, and observations
             Default behaviour: Compute ang vel command based on target and heading, compute measured terrain heights and randomly push robots
-        """        
+        """ 
+        # 做一些域随机化：这里做了球和push的随机化，legged_gym里做了更新前进方向指令、terrain measured_height
         self._randomize_balls()
         if self.cfg.domain_rand.push_robots and  (self.common_step_counter % self.cfg.domain_rand.push_interval == 0):
             self._push_robots()
