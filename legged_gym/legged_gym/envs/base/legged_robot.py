@@ -367,7 +367,7 @@ class LeggedRobot(BaseTask):
         self.rew_buf[:] = 0.
 
 
-
+        # 所有 reward_functions 定义在本文件的最后
         if "eereach" in self.reward_scales:
             self.reward_scales["eereach"] = self.eereach_init * (1 + 0.5 * self.curriculumupdate)
         if "success" in self.reward_scales:
@@ -393,7 +393,7 @@ class LeggedRobot(BaseTask):
 
         if self.cfg.rewards.only_positive_rewards:
             self.rew_buf[:] = torch.clip(self.rew_buf[:], min=0.)
-        # add termination reward after clipping
+        # add termination reward after clipping # TODO：没看明白为什么 termination 还有 reward
         if "termination" in self.reward_scales:
             rew = self._reward_termination() * self.reward_scales["termination"]
             self.rew_buf += rew
@@ -402,10 +402,10 @@ class LeggedRobot(BaseTask):
     def compute_observations(self):
         """ Computes observations
         """
-
+        # 左右手位置和相对torso位置
         hand_pos = self.rigid_body_states[:, self.hand_indices, :3].clone() 
         hand_pos_l, hand_pos_r = quat_rotate_inverse(self.base_quat, hand_pos[:,0,:]- self.torso_pos), quat_rotate_inverse(self.base_quat, hand_pos[:,1,:]- self.torso_pos)
-
+        # 预测落点位置
         initial_vanish = (self.catchstep < self.startstep).view(-1, 1)
         end_target_local = quat_rotate_inverse(self.base_quat, self.ball_states[:,:3] - self.torso_pos) * initial_vanish        
 
@@ -422,7 +422,7 @@ class LeggedRobot(BaseTask):
                                     self.dof_vel * self.obs_scales.dof_vel,
                                     self.actions,
                                     self.base_lin_vel * self.obs_scales.lin_vel,
-                                    self.end_regions.unsqueeze(-1) / 3.,
+                                    self.end_regions.unsqueeze(-1) / 3.,        # command
                                     quat_rotate_inverse(self.base_quat, self.end_target - self.torso_pos),
                                     quat_rotate_inverse(self.base_quat, self.ball_states[:,7:10]) * self.obs_scales.ball_vel,
                                     hand_pos_r,
@@ -470,7 +470,7 @@ class LeggedRobot(BaseTask):
                                     self.dist.unsqueeze(-1),
                                     ),dim=-1)
 
-
+        # teminate env 的 obs 不加 noise，也没有 privileged_obs
 
         return current_obs[env_ids]
     
@@ -486,7 +486,7 @@ class LeggedRobot(BaseTask):
         self._create_ground_plane()
         print("Finished creating ground. Time taken {:.2f} s".format(time() - start))
         print("*"*80)
-        self._create_envs()
+        self._create_envs()     # 这个好像很复杂
 
         
 
@@ -1134,6 +1134,7 @@ class LeggedRobot(BaseTask):
         asset_root = os.path.dirname(asset_path)
         asset_file = os.path.basename(asset_path)
 
+        # load 机器人的 options参数
         asset_options = gymapi.AssetOptions()
         asset_options.default_dof_drive_mode = self.cfg.asset.default_dof_drive_mode
         asset_options.collapse_fixed_joints = self.cfg.asset.collapse_fixed_joints
@@ -1141,7 +1142,7 @@ class LeggedRobot(BaseTask):
         asset_options.flip_visual_attachments = self.cfg.asset.flip_visual_attachments
         asset_options.fix_base_link = self.cfg.asset.fix_base_link
         asset_options.density = self.cfg.asset.density
-        asset_options.angular_damping = self.cfg.asset.angular_damping
+        asset_options.angular_damping = self.cfg.asset.angular_damping      # 这个参数是啥意思
         asset_options.linear_damping = self.cfg.asset.linear_damping
         asset_options.max_angular_velocity = self.cfg.asset.max_angular_velocity
         asset_options.max_linear_velocity = self.cfg.asset.max_linear_velocity
@@ -1149,6 +1150,7 @@ class LeggedRobot(BaseTask):
         asset_options.thickness = self.cfg.asset.thickness
         asset_options.disable_gravity = self.cfg.asset.disable_gravity
 
+        # 加载机器人
         robot_asset = self.gym.load_asset(self.sim, asset_root, asset_file, asset_options)
         self.num_dof = self.gym.get_asset_dof_count(robot_asset)
         self.num_bodies = self.gym.get_asset_rigid_body_count(robot_asset)
@@ -1175,10 +1177,10 @@ class LeggedRobot(BaseTask):
         feet_names = [s for s in body_names if self.cfg.asset.foot_name in s]
 
         penalized_contact_names = []
-        for name in self.cfg.asset.penalize_contacts_on:
+        for name in self.cfg.asset.penalize_contacts_on:        # 除手脚以外的link触地，要惩罚
             penalized_contact_names.extend([s for s in body_names if name in s])
         termination_contact_names = []
-        for name in self.cfg.asset.terminate_after_contacts_on:
+        for name in self.cfg.asset.terminate_after_contacts_on:     # 暂时没有什么link触地会直接terminate
             termination_contact_names.extend([s for s in body_names if name in s])
 
         hand_names  = [s for s in body_names if self.cfg.asset.hand_name in s]
@@ -1207,7 +1209,8 @@ class LeggedRobot(BaseTask):
             self.payload = torch_rand_float(self.cfg.domain_rand.payload_mass_range[0], self.cfg.domain_rand.payload_mass_range[1], (self.num_envs, 1), device=self.device)
         if self.cfg.domain_rand.randomize_com_displacement:
             self.com_displacement = torch_rand_float(self.cfg.domain_rand.com_displacement_range[0], self.cfg.domain_rand.com_displacement_range[1], (self.num_envs, 3), device=self.device)
-            
+        
+        # 处理多个env
         for i in range(self.num_envs):
             # create env instance
             env_handle = self.gym.create_env(self.sim, env_lower, env_upper, int(np.sqrt(self.num_envs)))
