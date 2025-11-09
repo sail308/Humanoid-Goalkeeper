@@ -153,7 +153,7 @@ class LeggedRobot(BaseTask):
             if self.device == 'cpu':
                 self.gym.fetch_results(self.sim, True)
             self.gym.refresh_dof_state_tensor(self.sim)
-        termination_ids, termination_priveleged_obs = self.post_physics_step()  # legged_gym 没有返回项
+        termination_ids, termination_priveleged_obs = self.post_physics_step()  # legged_gym 没有返回项, 计算reward、termination、obs
 
         # return clipped obs, clipped states (None), rewards, dones and infos, legged_gym 本来就有的原始代码
         clip_obs = self.cfg.normalization.clip_observations
@@ -211,7 +211,7 @@ class LeggedRobot(BaseTask):
         
         self._post_physics_step_callback()
 
-        # 计算球和接球区域相关的变量, 需要用到的时候细看
+        # 计算球和接球区域相关的变量, TODO：需要用到的时候细看
         balllocal =  self.ball_states[:, 0] - self.env_origins[:, 0]    # 球在env中坐标
         approachidx = ((balllocal < 0.5) & (balllocal > 0.1) & (self.ball_states[:,7]  - self.ball_vel < 2.0)).nonzero(as_tuple=False).flatten() # 找出所有非零元素的env索引
         self.end_target[approachidx, :] = self.ball_states[approachidx, :3].clone()
@@ -263,7 +263,7 @@ class LeggedRobot(BaseTask):
         """ Check if environments need to be reset
         """
 
-
+        # 终止条件：膝盖z小于0.1，最长3秒，projected_gravity任意维度>0.8，脚力太大
         self.reset_buf = torch.min(self.rigid_body_states[:, self.knee_indices, 2], dim = -1).values < 0.10
         self.time_out_buf = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
         self.gravity_termination_buf = torch.any(torch.norm(self.projected_gravity[:, 0:2], dim=-1, keepdim=True) > 0.8, dim=1)
@@ -274,7 +274,7 @@ class LeggedRobot(BaseTask):
         self.reset_buf |= sharpforce_buf
 
 
-
+    # 每一个step中，可能有一些env要被reset
     def reset_idx(self, env_ids):
         """ Reset some environments.
             Calls self._reset_dofs(env_ids), self._reset_root_states(env_ids)
@@ -312,18 +312,18 @@ class LeggedRobot(BaseTask):
         self.reset_buf[env_ids] = 1
 
         
-         #reset randomized prop
-        if self.cfg.domain_rand.randomize_kp:
+         #reset randomized prop，reset是需要一些randomize
+        if self.cfg.domain_rand.randomize_kp:   # kp
             self.Kp_factors[env_ids] = torch_rand_float(self.cfg.domain_rand.kp_range[0], self.cfg.domain_rand.kp_range[1], (len(env_ids), self.num_dof), device=self.device)
-        if self.cfg.domain_rand.randomize_kd:
+        if self.cfg.domain_rand.randomize_kd:   # kd
             self.Kd_factors[env_ids] = torch_rand_float(self.cfg.domain_rand.kd_range[0], self.cfg.domain_rand.kd_range[1], (len(env_ids), self.num_dof), device=self.device)
-        if self.cfg.domain_rand.randomize_actuation_offset:
+        if self.cfg.domain_rand.randomize_actuation_offset:     # 输出torque不仅有jitter，还有一个稳定的offset
             self.actuation_offset[env_ids] = torch_rand_float(self.cfg.domain_rand.actuation_offset_range[0], self.cfg.domain_rand.actuation_offset_range[1], (len(env_ids), self.num_dof), device=self.device) * self.torque_limits.unsqueeze(0)
             self.actuation_offset[:, self.curriculum_dof_indices] = 0.
         self.reach_goal_timer[env_ids] = 0
 
         # fill extras
-        self.extras["episode"] = {}
+        self.extras["episode"] = {}     # episode 的reward, TODO：需要看一下 isaacgym 的 step 函数返回的 extra 有什么作用
         for key in self.episode_sums.keys():
             self.extras["episode"]['rew_' + key] = torch.mean(self.episode_sums[key][env_ids] / torch.clip(self.episode_length_buf[env_ids], min=1) / self.dt)
             self.episode_sums[key][env_ids] = 0.
@@ -334,7 +334,7 @@ class LeggedRobot(BaseTask):
             self.extras["time_outs"] = self.time_out_buf
 
             
-        if (self.common_step_counter - self.last_step_counter) >500:
+        if (self.common_step_counter - self.last_step_counter) >500:    # curriculum，逐渐增加 command的range，TODO：看下具体怎么增加的
             
             self.startstep = 50 - random.randint(3, 10)
 
@@ -1356,7 +1356,7 @@ class LeggedRobot(BaseTask):
         self.dt = self.cfg.control.decimation * self.sim_params.dt
         self.obs_scales = self.cfg.normalization.obs_scales
         self.reward_scales = class_to_dict(self.cfg.rewards.scales)
-        self.max_episode_length_s = self.cfg.env.episode_length_s
+        self.max_episode_length_s = self.cfg.env.max_episode_length
         self.max_episode_length = np.ceil(self.max_episode_length_s / self.dt)
 
         self.cfg.domain_rand.push_interval = np.ceil(self.cfg.domain_rand.push_interval_s / self.dt)
