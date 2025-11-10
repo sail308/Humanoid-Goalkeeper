@@ -486,12 +486,12 @@ class LeggedRobot(BaseTask):
         self._create_ground_plane()
         print("Finished creating ground. Time taken {:.2f} s".format(time() - start))
         print("*"*80)
-        self._create_envs()     # 这个好像很复杂
+        self._create_envs()     # 这个好像很复杂: 加载机器人，多个env，关节indice处理
 
         
 
     #------------- Callbacks --------------
-    def _process_rigid_shape_props(self, props, env_id):
+    def _process_rigid_shape_props(self, props, env_id):        # create时随机化 friction 和 restitution
         """ Callback allowing to store/change/randomize the rigid shape properties of each environment.
             Called During environment creation.
             Base behavior: randomizes the friction of each environment
@@ -523,7 +523,7 @@ class LeggedRobot(BaseTask):
 
         return props
     
-    def refresh_actor_rigid_shape_props(self, env_ids):
+    def refresh_actor_rigid_shape_props(self, env_ids):     # reset时 随机化 friction 和 restitution
         if self.cfg.domain_rand.randomize_friction:
             self.friction_coeffs[env_ids] = torch_rand_float(self.cfg.domain_rand.friction_range[0], self.cfg.domain_rand.friction_range[1], (len(env_ids), 1), device=self.device)
         if self.cfg.domain_rand.randomize_restitution:
@@ -542,7 +542,7 @@ class LeggedRobot(BaseTask):
                 
             self.gym.set_actor_rigid_shape_properties(env_handle, actor_handle, rigid_shape_props)
 
-    def _process_dof_props(self, props, env_id):
+    def _process_dof_props(self, props, env_id):    # create 时这是关节 p v t 上下limit
         """ Callback allowing to store/change/randomize the DOF properties of each environment.
             Called During environment creation.
             Base behavior: stores position, velocity and torques limits defined in the URDF
@@ -582,7 +582,7 @@ class LeggedRobot(BaseTask):
 
         return props
 
-    def _process_rigid_body_props(self, props, env_id):
+    def _process_rigid_body_props(self, props, env_id): # create时随机化 质量，com，负载质量
         if env_id==0:
             sum = 0
             for i, p in enumerate(props):
@@ -604,7 +604,7 @@ class LeggedRobot(BaseTask):
 
         return props
     
-    def refresh_actor_rigid_body_props(self, env_ids):
+    def refresh_actor_rigid_body_props(self, env_ids): # reset 时随机化 质量，com，负载质量，没有调用
         if self.cfg.domain_rand.randomize_payload_mass:
             self.payload[env_ids] = torch_rand_float(self.cfg.domain_rand.payload_mass_range[0], self.cfg.domain_rand.payload_mass_range[1], (len(env_ids), 1), device=self.device)
             
@@ -667,7 +667,7 @@ class LeggedRobot(BaseTask):
         torques = torques + self.actuation_offset + self.joint_injection
         return torch.clip(torques, -self.torque_limits, self.torque_limits)
 
-    def _reset_dofs(self, env_ids):
+    def _reset_dofs(self, env_ids):     # reset 时，随机化关节初始位置，在init 关节位置的0.5-1.5倍内随机scale，再加上随机offset
         """ Resets DOF position and velocities of selected environmments
         Positions are randomly selected within 0.5:1.5 x default positions.
         Velocities are set to zero.
@@ -703,7 +703,7 @@ class LeggedRobot(BaseTask):
 
 
         
-    def _reset_root_states(self, env_ids):
+    def _reset_root_states(self, env_ids):  # reset时，随机化 root state，以及ball state
         """ Resets ROOT states position and velocities of selected environmments
             Sets base position based on the curriculum
             Selects randomized base velocities within -0.5:0.5 [m/s, rad/s]
@@ -747,7 +747,7 @@ class LeggedRobot(BaseTask):
                                                      gymtorch.unwrap_tensor(all_states),
                                                      gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
 
-    def _push_robots(self):
+    def _push_robots(self):     # 在step中的 _post_physics_step_callback 中，给root一个随机速度
         """ Random pushes the robots. Emulates an impulse by setting a randomized base velocity. 
         """
         max_vel = self.cfg.domain_rand.max_push_vel_xy
@@ -755,7 +755,7 @@ class LeggedRobot(BaseTask):
         all_states = torch.cat((self.root_states.unsqueeze(1),self.ball_states.unsqueeze(1)),dim = 1).view(-1, 13)
         self.gym.set_actor_root_state_tensor(self.sim, gymtorch.unwrap_tensor(all_states))
 
-    def _randomize_balls(self):
+    def _randomize_balls(self): # 在step中的 _post_physics_step_callback 中, 给ball一个随机扰动速度
         """ Random pushes the robots. Emulates an impulse by setting a randomized base velocity. 
         """
         
@@ -781,7 +781,7 @@ class LeggedRobot(BaseTask):
         return -0.5 * rho * drag_coeff * cross_area * speed * velocity
 
 
-    def assign_ball_states(self, ball_ids, g=9.81):
+    def assign_ball_states(self, ball_ids, g=9.81): # reset时，随机化ball state，返回 ball vel
 
         dtype = torch.float
         device = self.ball_start.device
@@ -829,7 +829,7 @@ class LeggedRobot(BaseTask):
 
 
 
-    def _get_noise_scale_vec(self, cfg):
+    def _get_noise_scale_vec(self, cfg):        # init_buffer时，初始化每个obs的noise scale
         """ Sets a vector used to scale the noise added to the observations.
             [NOTE]: Must be adapted when changing the observations structure
 
@@ -1072,7 +1072,7 @@ class LeggedRobot(BaseTask):
             
     
 
-    def _prepare_reward_function(self):
+    def _prepare_reward_function(self):     # 构造函数里调用
         """ Prepares a list of reward functions, whcih will be called to compute the total reward.
             Looks for self._reward_<REWARD_NAME>, where <REWARD_NAME> are names of all non zero reward scales in the cfg.
         """
@@ -1218,7 +1218,7 @@ class LeggedRobot(BaseTask):
             pos[:2] += torch_rand_float(-0.3, 0.3, (2,1), device=self.device).squeeze(1)
             start_pose.p = gymapi.Vec3(*pos)
                 
-            rigid_shape_props = self._process_rigid_shape_props(rigid_shape_props_asset, i)
+            rigid_shape_props = self._process_rigid_shape_props(rigid_shape_props_asset, i)     # friction和restitution 随机化
             self.gym.set_asset_rigid_shape_properties(robot_asset, rigid_shape_props)
             actor_handle = self.gym.create_actor(env_handle, robot_asset, start_pose, self.cfg.asset.name, i, self.cfg.asset.self_collisions, 0)
             dof_props = self._process_dof_props(dof_props_asset, i)
@@ -1338,7 +1338,7 @@ class LeggedRobot(BaseTask):
         for i, name in enumerate(self.keyframe_names):
             self.keyframe_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], name)
 
-    def _get_env_origins(self):
+    def _get_env_origins(self): # _create_env时调用
         """ Sets environment origins. On rough terrain the origins are defined by the terrain platforms.
             Otherwise create a grid.
         """
@@ -1356,7 +1356,7 @@ class LeggedRobot(BaseTask):
         self.env_origins[:, 2] = 0.
 
     def _parse_cfg(self, cfg):
-        self.dt = self.cfg.control.decimation * self.sim_params.dt
+        self.dt = self.cfg.control.decimation * self.sim_params.dt      # 控制频率 时 仿真频率的 倍数
         self.obs_scales = self.cfg.normalization.obs_scales
         self.reward_scales = class_to_dict(self.cfg.rewards.scales)
         self.max_episode_length_s = self.cfg.env.max_episode_length
