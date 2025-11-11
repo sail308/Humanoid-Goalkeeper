@@ -414,7 +414,7 @@ class LeggedRobot(BaseTask):
         random_vanish = (self.catchstep > self.vanish_step).view(-1, 1)
         self.ball_last = end_target_local
 
-        current_obs = torch.cat((   
+        current_obs = torch.cat((       # 所有量的维度都是 [num_env, n]
                                     end_target_local, # * ball_in_camera_fov,
                                     self.base_ang_vel  * self.obs_scales.ang_vel,
                                     self.projected_gravity,
@@ -970,7 +970,7 @@ class LeggedRobot(BaseTask):
             self.command_bound[env_idx, 2] = region_ranges["maxh"][0]  # height_0
             self.command_bound[env_idx, 3] = region_ranges["maxh"][1]  # height_1
         
-        self.init_ranges[0] = command_dict["ranges_1"]["maxw"][0]   # -1.8
+        self.init_ranges[0] = command_dict["ranges_1"]["maxw"][0]   # -1.8 球门的宽高范围，在生成球的起始点的时候用到 assign_ball_states
         self.init_ranges[1] = command_dict["ranges_0"]["maxw"][1]   # 1.8
         self.init_ranges[2] = command_dict["ranges_4"]["maxh"][0]   # 0.1
         self.init_ranges[3] = command_dict["ranges_2"]["maxh"][1]   # 1.8
