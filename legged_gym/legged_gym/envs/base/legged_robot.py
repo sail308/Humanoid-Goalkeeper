@@ -141,7 +141,7 @@ class LeggedRobot(BaseTask):
         # 随机偏执的范围是 torque_limits 的 (-0.01,0.01) 倍
         if self.cfg.domain_rand.randomize_joint_injection:
             self.joint_injection = torch_rand_float(self.cfg.domain_rand.joint_injection_range[0], self.cfg.domain_rand.joint_injection_range[1], (self.num_envs, self.num_dof), device=self.device) * self.torque_limits.unsqueeze(0)
-            self.joint_injection[:, self.curriculum_dof_indices] = 0.   # curriculum_joints(waist_yaw, shoulder_yaw, shoulder_roll)不加偏执
+            self.joint_injection[:, self.curriculum_dof_indices] = 0.   # curriculum_joints(waist_yaw, shoulder_yaw, shoulder_roll)不加偏置
 
         # step physics and render each frame
         # 这段就是原始的 legged_gym 的代码，除了用 delayed_actions 替换了 actions 求 torques
@@ -317,7 +317,7 @@ class LeggedRobot(BaseTask):
             self.Kp_factors[env_ids] = torch_rand_float(self.cfg.domain_rand.kp_range[0], self.cfg.domain_rand.kp_range[1], (len(env_ids), self.num_dof), device=self.device)
         if self.cfg.domain_rand.randomize_kd:   # kd
             self.Kd_factors[env_ids] = torch_rand_float(self.cfg.domain_rand.kd_range[0], self.cfg.domain_rand.kd_range[1], (len(env_ids), self.num_dof), device=self.device)
-        if self.cfg.domain_rand.randomize_actuation_offset:     # 输出torque不仅有jitter，还有一个稳定的offset
+        if self.cfg.domain_rand.randomize_actuation_offset:     # 输出torque不仅有injection，还有一个稳定的offset
             self.actuation_offset[env_ids] = torch_rand_float(self.cfg.domain_rand.actuation_offset_range[0], self.cfg.domain_rand.actuation_offset_range[1], (len(env_ids), self.num_dof), device=self.device) * self.torque_limits.unsqueeze(0)
             self.actuation_offset[:, self.curriculum_dof_indices] = 0.
         self.reach_goal_timer[env_ids] = 0
@@ -338,10 +338,10 @@ class LeggedRobot(BaseTask):
             
             self.startstep = 50 - random.randint(3, 10)
 
-            self.curriculumupdate = int(torch.mean(self.episode_length_buf[env_ids].float()) / 50.)
+            self.curriculumupdate = int(torch.mean(self.episode_length_buf[env_ids].float()) / 50.) # 当 episode 的平均长度大于50时，可以提高课程难度
 
             # self.curriculumsigma = torch.mean(self.success_rate[:,2]) * 5.0 + self.cfg.rewards.catch_sigma
-
+            # command range 的上限逐渐增大，下限逐渐减小
             self.command_ranges[:, 0] =  torch.clip(self.command_ranges[:, 0] - 0.3 * self.curriculumupdate, self.command_bound[:,0], self.command_bound[:,1])
             self.command_ranges[:, 1] =  torch.clip(self.command_ranges[:, 1] + 0.3 * self.curriculumupdate,  self.command_bound[:,0], self.command_bound[:,1])
             self.command_ranges[:, 2] =  torch.clip(self.command_ranges[:, 2] - 0.3 * self.curriculumupdate, self.command_bound[:,2], self.command_bound[:,3])
@@ -781,47 +781,47 @@ class LeggedRobot(BaseTask):
         return -0.5 * rho * drag_coeff * cross_area * speed * velocity
 
 
-    def assign_ball_states(self, ball_ids, g=9.81): # reset时，随机化ball state，返回 ball vel
+    def assign_ball_states(self, ball_ids, g=9.81): # reset时，随机化ball state，返回 ball vel。ball_ids 就是要 reset 的 env_ids
 
         dtype = torch.float
         device = self.ball_start.device
-
+        # 每个球预设 50步，也就是0.5秒就能抓到
         self.catchstep[ball_ids] = 50 * torch.ones(len(ball_ids), dtype = torch.int, device = self.device)
-                
+        # 起点的xyz坐标：x[3,5], y[-1.8, 1.8], z[0.1,1.5]: yz在球门范围
         ball_start_local = torch.stack([
             2.0 * torch.rand(len(ball_ids), dtype=dtype, device=device) + 3.0,
-            torch.rand(len(ball_ids), dtype=dtype, device=device) * (self.init_ranges[1] - self.init_ranges[0]) + self.init_ranges[0],
-            torch.rand(len(ball_ids), dtype=dtype, device=device) * (self.init_ranges[3] - self.init_ranges[2]) + self.init_ranges[2]
+            torch.rand(len(ball_ids), dtype=dtype, device=device) * (self.init_ranges[1] - self.init_ranges[0]) + self.init_ranges[0],  # 1.8, -1.8 -> [-1.8, 1.8]
+            torch.rand(len(ball_ids), dtype=dtype, device=device) * (self.init_ranges[3] - self.init_ranges[2]) + self.init_ranges[2]   # 1.5, 0.1 -> [0.1, 1.5]
         ], dim=1)
-
+        # 终点的xyz坐标：x[-0.6,-1], yz在command_range里
         ball_end_local = torch.stack([
             -0.5 * torch.rand(len(ball_ids), dtype=dtype, device=device) - 0.1,
             torch.rand(len(ball_ids), dtype=dtype, device=device) * (self.command_ranges[ball_ids, 1] - self.command_ranges[ball_ids, 0]) + self.command_ranges[ball_ids, 0],
             torch.rand(len(ball_ids), dtype=dtype, device=device) * (self.command_ranges[ball_ids, 3] - self.command_ranges[ball_ids, 2]) + self.command_ranges[ball_ids, 2]
         ], dim=1)
 
-        # in world frame
+        # in world frame，加上 env原点 在世界坐标系的坐标
         self.ball_start[ball_ids,:] = ball_start_local + self.env_origins[ball_ids]  # convert the local target cord in world frame 
         self.ball_start[ball_ids, 2] = ball_start_local[:, 2]
 
         self.ball_end[ball_ids,:] = ball_end_local + self.env_origins[ball_ids] # convert the local target cord in world frame 
         self.ball_end[ball_ids, 2] = ball_end_local[:, 2]
-
+        # x=0.1前轨迹的比例
         catch_prop = (0.1 - ball_start_local[:,0:1]) / (ball_end_local[:,0:1] - ball_start_local[:,0:1])
 
-        # Compute velocity
+        # Compute velocity，位置变化量
         delta_pos = self.ball_end[ball_ids,:] - self.ball_start[ball_ids,:]
 
-
+        # 飞行时间 [0.4, 1.0]
         t_flight = 0.4 + 0.6 * torch.rand((1), dtype=dtype, device=device)
 
         if self.play:
             t_flight = 0.5 + 0.5 * torch.rand((1), dtype=dtype, device=device)     
-
+        # 挡球位置就是起点和终点按比例划分
         self.end_target[ball_ids,:] = self.ball_start[ball_ids,:] + delta_pos * catch_prop
 
         ball_vel = torch.empty_like(delta_pos)
-
+        # 球的初始速度，xy速度匀速，z方向匀减速
         ball_vel[:, 0:2] = delta_pos[:, 0:2] / t_flight
         ball_vel[:, 2] = (delta_pos[:, 2] + 0.5 * g * t_flight**2) / t_flight
 
@@ -924,40 +924,40 @@ class LeggedRobot(BaseTask):
         self.ball_traj = [[], [], [], []]
         self.parabola = [[], [], [], []]
 
-        self.end_target = torch.zeros(self.num_envs, 3, dtype = torch.float, device= self.device)
+        self.end_target = torch.zeros(self.num_envs, 3, dtype = torch.float, device= self.device)   # 3维0向量 per env
 
-        six = self.num_envs // 6
+        six = self.num_envs // 6        # 向下取整, env/6。所有env分成6份，分别执行 range0,1,2,3,4,5
         self.end_regions = torch.cat([
-            torch.zeros(six, dtype=torch.long, device = self.device),
-            torch.ones(six, dtype=torch.long, device = self.device),
-            torch.full((six,), 2, dtype=torch.long, device = self.device),
-            torch.full((six,), 3, dtype=torch.long, device = self.device),
-            torch.full((six,), 4, dtype=torch.long, device = self.device),
-            torch.full((six,), 5, dtype=torch.long, device = self.device)
+            torch.zeros(six, dtype=torch.long, device = self.device),       # env/6 个 0
+            torch.ones(six, dtype=torch.long, device = self.device),        # env/6 个 1
+            torch.full((six,), 2, dtype=torch.long, device = self.device),  # env/6 个 2
+            torch.full((six,), 3, dtype=torch.long, device = self.device),  # env/6 个 3
+            torch.full((six,), 4, dtype=torch.long, device = self.device),  # env/6 个 4
+            torch.full((six,), 5, dtype=torch.long, device = self.device)   # env/6 个 5
         ])
     
         command_dict = class_to_dict(self.cfg.commands)
 
         # Initialize an empty tensor for command ranges
         num_envs = len(self.end_regions)
-        self.command_ranges = torch.zeros((num_envs, 4), dtype=torch.float32, device=self.device)
-        self.command_bound  = torch.zeros((num_envs, 4), dtype=torch.float32, device=self.device)
-        self.init_ranges  = torch.zeros((4), dtype=torch.float32, device=self.device)
+        self.command_ranges = torch.zeros((num_envs, 4), dtype=torch.float32, device=self.device)   # 4维0向量 per env
+        self.command_bound  = torch.zeros((num_envs, 4), dtype=torch.float32, device=self.device)   # 4维0向量 per env
+        self.init_ranges  = torch.zeros((4), dtype=torch.float32, device=self.device)       # 4维0向量, 球门范围的ymin，ymax，zmin，zmax
         # For each environment, set the appropriate ranges based on end_region
         for env_idx in range(num_envs):
-            region = self.end_regions[env_idx].item()  # Get the region (0, 1, 2, or 3)
-            region_key = f"ranges_{region}"
+            region = self.end_regions[env_idx].item()  # Get the region (0, 1, 2, 3, 4, or 5)
+            region_key = f"ranges_{region}"     # range_0, _1, _2, _3, _4, or _5
             
             # Get the ranges for this region
-            region_ranges = command_dict[region_key]
+            region_ranges = command_dict[region_key] # 包含 height[0.4, 1.2], width[-1.2, -0.2], maxh[0.3, 1.5], maxw[-1.8, -0.0], evalh[0.3, 1.5], evalw[-1.5, 0.0]
             
-            # Assign height and width ranges
+            # Assign height and width ranges, 比max会稍微小一点
             self.command_ranges[env_idx, 0] = region_ranges["width"][0]   # width_0
             self.command_ranges[env_idx, 1] = region_ranges["width"][1]   # width_1
             self.command_ranges[env_idx, 2] = region_ranges["height"][0]  # height_0
             self.command_ranges[env_idx, 3] = region_ranges["height"][1]  # height_1
 
-            if self.play:
+            if self.play:       # play用，train不用
                 self.command_ranges[env_idx, 0] = region_ranges["evalw"][0]   # width_0
                 self.command_ranges[env_idx, 1] = region_ranges["evalw"][1]   # width_1
                 self.command_ranges[env_idx, 2] = region_ranges["evalh"][0]  # height_0
@@ -970,10 +970,10 @@ class LeggedRobot(BaseTask):
             self.command_bound[env_idx, 2] = region_ranges["maxh"][0]  # height_0
             self.command_bound[env_idx, 3] = region_ranges["maxh"][1]  # height_1
         
-        self.init_ranges[0] = command_dict["ranges_1"]["maxw"][0]
-        self.init_ranges[1] = command_dict["ranges_0"]["maxw"][1]
-        self.init_ranges[2] = command_dict["ranges_4"]["maxh"][0]
-        self.init_ranges[3] = command_dict["ranges_2"]["maxh"][1]
+        self.init_ranges[0] = command_dict["ranges_1"]["maxw"][0]   # -1.8
+        self.init_ranges[1] = command_dict["ranges_0"]["maxw"][1]   # 1.8
+        self.init_ranges[2] = command_dict["ranges_4"]["maxh"][0]   # 0.1
+        self.init_ranges[3] = command_dict["ranges_2"]["maxh"][1]   # 1.8
 
 
 

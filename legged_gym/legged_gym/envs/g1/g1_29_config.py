@@ -21,14 +21,14 @@ class G129Cfg(LeggedRobotCfg):
         ball_gravity = True
         play = False
 
-    class commands:
+    class commands: # maxw 和 maxh 是 xy 的最大范围
         
         class ranges_0:
             height = [0.4, 1.2] 
             width =  [0.2, 1.2]
 
-            maxh = [0.3, 1.5]
-            maxw = [0.0, 1.8]
+            maxh = [0.3, 1.5]   # middle
+            maxw = [0.0, 1.8]   # left
 
             evalh = [0.3, 1.5]
             evalw = [0.0, 1.5]
@@ -37,8 +37,8 @@ class G129Cfg(LeggedRobotCfg):
             height = [0.4, 1.2] 
             width = [-1.2, -0.2]
 
-            maxh = [0.3, 1.5] 
-            maxw = [-1.8, -0.0]
+            maxh = [0.3, 1.5]   # middle
+            maxw = [-1.8, -0.0] # right
 
             evalh = [0.3, 1.5]
             evalw = [-1.5, 0.0]
@@ -48,8 +48,8 @@ class G129Cfg(LeggedRobotCfg):
             height = [1.2, 1.6] 
             width = [0, 1.0]
 
-            maxh = [1.2, 1.8] 
-            maxw = [0, 1.5]
+            maxh = [1.2, 1.8] # upper
+            maxw = [0, 1.5]     # left
         
             evalh = [1.2, 1.8] 
             evalw = [0, 1.5]
@@ -58,8 +58,8 @@ class G129Cfg(LeggedRobotCfg):
             height = [1.2, 1.6] 
             width = [-1.0, 0.0]
 
-            maxh = [1.2, 1.8] 
-            maxw = [-1.5, 0.0]
+            maxh = [1.2, 1.8] # upper
+            maxw = [-1.5, 0.0]  # right
 
             evalh = [1.2, 1.8] 
             evalw = [-1.5, 0.0]
@@ -68,8 +68,8 @@ class G129Cfg(LeggedRobotCfg):
             height = [0.1, 0.3] 
             width = [0.2, 1.2]
 
-            maxh = [0.1, 0.3]
-            maxw = [0.0, 1.8]
+            maxh = [0.1, 0.3]   # lower
+            maxw = [0.0, 1.8]   # left
 
             evalh = [0.1, 0.3] 
             evalw = [0.0, 1.5]
@@ -79,8 +79,8 @@ class G129Cfg(LeggedRobotCfg):
             height = [0.1, 0.3] 
             width = [-1.2, -0.2]
 
-            maxh = [0.1, 0.3]
-            maxw = [-1.8, -0.0]
+            maxh = [0.1, 0.3]   # lower
+            maxw = [-1.8, -0.0] # right
 
             evalh = [0.1, 0.3] 
             evalw = [-1.5, -0.0]
